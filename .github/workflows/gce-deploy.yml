@@ -28,8 +28,14 @@ on:
         type: string
       gce_zone_secret:
         description: Name of the caller secret containing the GCE zone.
-        required: true
+        required: false
         type: string
+        default: ''
+      gce_zone:
+        description: Optional literal GCE zone used when the caller has no zone secret.
+        required: false
+        type: string
+        default: ''
       gcp_sa_email_secret:
         description: Name of the caller secret containing the workload identity service account email.
         required: true
@@ -121,7 +127,7 @@ jobs:
       id-token: write
     env:
       GCE_INSTANCE_NAME: ${{ secrets[inputs.gce_instance_secret] }}
-      GCE_ZONE: ${{ secrets[inputs.gce_zone_secret] }}
+      GCE_ZONE: ${{ inputs.gce_zone || secrets[inputs.gce_zone_secret] }}
       GCP_SA_EMAIL: ${{ secrets[inputs.gcp_sa_email_secret] }}
       GCP_WIF_PROVIDER: ${{ secrets[inputs.gcp_wif_provider_secret] }}
       APP_ENV: ${{ secrets[inputs.app_env_secret] }}
