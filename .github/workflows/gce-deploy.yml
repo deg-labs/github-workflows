@@ -137,6 +137,8 @@ jobs:
       DEV_TOKEN: ${{ secrets[inputs.beszel_agent_token_secret] }}
       DEV_HUB_URL: ${{ secrets[inputs.beszel_hub_url_secret] }}
       NOTIFICATION_SUPPRESSION_SECONDS: ${{ inputs.notification_suppression_seconds }}
+      DEPLOY_SERVER: ${{ inputs.deploy_server }}
+      DEPLOY_CLIENT: ${{ inputs.deploy_client }}
 
     steps:
       - name: Create GitHub App token
