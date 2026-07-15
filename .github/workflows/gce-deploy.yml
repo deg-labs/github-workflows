@@ -250,14 +250,14 @@ jobs:
 
       - name: Deploy on GCE
         shell: bash
+        env:
+          REMOTE_DEPLOY_COMMAND: ${{ inputs.remote_deploy_command }}
         run: |
           set -euo pipefail
-          remote_command="$(cat <<'REMOTE_COMMAND'
-          DEPLOY_SERVER='${{ inputs.deploy_server }}'
-          DEPLOY_CLIENT='${{ inputs.deploy_client }}'
-          ${{ inputs.remote_deploy_command }}
-          REMOTE_COMMAND
-          )"
+          printf -v remote_command "DEPLOY_SERVER='%s'\nDEPLOY_CLIENT='%s'\n%s\n" \
+            "${{ inputs.deploy_server }}" \
+            "${{ inputs.deploy_client }}" \
+            "$REMOTE_DEPLOY_COMMAND"
           gcloud compute ssh "${GCE_INSTANCE_NAME}" --zone "${GCE_ZONE}" --command "$remote_command"
 
       - name: Clean up remote artifact
