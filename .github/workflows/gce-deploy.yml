@@ -1,0 +1,258 @@
+name: Deploy application to GCE
+
+on:
+  workflow_call:
+    inputs:
+      checkout_submodules:
+        description: Check out submodules recursively.
+        required: false
+        type: boolean
+        default: false
+      enforce_deploy_team:
+        description: Require the actor to belong to the configured organization team.
+        required: false
+        type: boolean
+        default: false
+      deploy_team_slug:
+        description: Organization team allowed to deploy when enforcement is enabled.
+        required: false
+        type: string
+        default: deg-develop
+      start_instance:
+        description: Start a stopped GCE instance and wait for SSH readiness.
+        required: true
+        type: boolean
+      gce_instance_secret:
+        description: Name of the caller secret containing the GCE instance name.
+        required: true
+        type: string
+      gce_zone_secret:
+        description: Name of the caller secret containing the GCE zone.
+        required: true
+        type: string
+      gcp_sa_email_secret:
+        description: Name of the caller secret containing the workload identity service account email.
+        required: true
+        type: string
+      gcp_wif_provider_secret:
+        description: Name of the caller secret containing the workload identity provider.
+        required: true
+        type: string
+      app_env_secret:
+        description: Optional caller secret name whose value is exposed to prepare_command as APP_ENV.
+        required: false
+        type: string
+        default: ''
+      discord_webhook_secret:
+        description: Optional caller secret name exposed to prepare_command as DISCORD_WEBHOOK_URL.
+        required: false
+        type: string
+        default: ''
+      addresses_secret:
+        description: Optional caller secret name exposed to prepare_command as ADDRESSES_TXT.
+        required: false
+        type: string
+        default: ''
+      beszel_agent_key_secret:
+        description: Optional caller secret name exposed to prepare_command as DEV_KEY.
+        required: false
+        type: string
+        default: ''
+      beszel_agent_token_secret:
+        description: Optional caller secret name exposed to prepare_command as DEV_TOKEN.
+        required: false
+        type: string
+        default: ''
+      beszel_hub_url_secret:
+        description: Optional caller secret name exposed to prepare_command as DEV_HUB_URL.
+        required: false
+        type: string
+        default: ''
+      github_app_id_secret:
+        description: Optional caller secret name for the GitHub App ID.
+        required: false
+        type: string
+        default: ''
+      github_app_private_key_secret:
+        description: Optional caller secret name for the GitHub App private key.
+        required: false
+        type: string
+        default: ''
+      notification_suppression_seconds:
+        description: Optional value exposed to prepare_command.
+        required: false
+        type: string
+        default: '3600'
+      deploy_server:
+        description: Value exposed to remote_deploy_command for conditional server deployment.
+        required: false
+        type: boolean
+        default: true
+      deploy_client:
+        description: Value exposed to remote_deploy_command for conditional client deployment.
+        required: false
+        type: boolean
+        default: true
+      prepare_command:
+        description: Optional shell command executed before artifacts are created.
+        required: false
+        type: string
+        default: ''
+      artifact_excludes:
+        description: Newline-delimited paths to omit from the application archive.
+        required: false
+        type: string
+        default: ''
+      additional_upload_files:
+        description: Newline-delimited files to upload in addition to /tmp/app.tar.gz.
+        required: false
+        type: string
+        default: ''
+      remote_deploy_command:
+        description: Shell command executed on the GCE instance after artifact upload.
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCE_INSTANCE_NAME: ${{ secrets[inputs.gce_instance_secret] }}
+      GCE_ZONE: ${{ secrets[inputs.gce_zone_secret] }}
+      GCP_SA_EMAIL: ${{ secrets[inputs.gcp_sa_email_secret] }}
+      GCP_WIF_PROVIDER: ${{ secrets[inputs.gcp_wif_provider_secret] }}
+      APP_ENV: ${{ secrets[inputs.app_env_secret] }}
+      DISCORD_WEBHOOK_URL: ${{ secrets[inputs.discord_webhook_secret] }}
+      ADDRESSES_TXT: ${{ secrets[inputs.addresses_secret] }}
+      DEV_KEY: ${{ secrets[inputs.beszel_agent_key_secret] }}
+      DEV_TOKEN: ${{ secrets[inputs.beszel_agent_token_secret] }}
+      DEV_HUB_URL: ${{ secrets[inputs.beszel_hub_url_secret] }}
+      NOTIFICATION_SUPPRESSION_SECONDS: ${{ inputs.notification_suppression_seconds }}
+
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        if: inputs.enforce_deploy_team || inputs.checkout_submodules
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets[inputs.github_app_id_secret] }}
+          private-key: ${{ secrets[inputs.github_app_private_key_secret] }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          token: ${{ steps.app-token.outputs.token || github.token }}
+          submodules: ${{ inputs.checkout_submodules && 'recursive' || 'false' }}
+
+      - name: Guard deploy actor is allowed member
+        if: inputs.enforce_deploy_team
+        env:
+          DEPLOY_ACTOR: ${{ github.actor }}
+          DEPLOY_TEAM_SLUG: ${{ inputs.deploy_team_slug }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORG_NAME: ${{ github.repository_owner }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TEAM_MEMBERS="$(gh api "orgs/${ORG_NAME}/teams/${DEPLOY_TEAM_SLUG}/members" --jq '.[].login')"
+          if ! grep -Fxq "$DEPLOY_ACTOR" <<<"$TEAM_MEMBERS"; then
+            echo "Actor '$DEPLOY_ACTOR' is not in ${ORG_NAME}/${DEPLOY_TEAM_SLUG}. Deployment is blocked."
+            exit 1
+          fi
+
+      - name: Validate required variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${GCE_INSTANCE_NAME:?GCE_INSTANCE_NAME is required}"
+          : "${GCE_ZONE:?GCE_ZONE is required}"
+          : "${GCP_SA_EMAIL:?GCP_SA_EMAIL is required}"
+          : "${GCP_WIF_PROVIDER:?GCP_WIF_PROVIDER is required}"
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_SA_EMAIL }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Start non-production GCE instance and wait for SSH
+        if: inputs.start_instance
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for _ in {1..60}; do
+            instance_status="$(gcloud compute instances describe "${GCE_INSTANCE_NAME}" --zone "${GCE_ZONE}" --format='value(status)')"
+            if [[ "${instance_status}" == "RUNNING" ]]; then
+              break
+            fi
+
+            if [[ "${instance_status}" == "TERMINATED" ]]; then
+              gcloud compute instances start "${GCE_INSTANCE_NAME}" --zone "${GCE_ZONE}"
+            fi
+            sleep 5
+          done
+
+          if [[ "${instance_status}" != "RUNNING" ]]; then
+            echo "Timed out waiting for ${GCE_INSTANCE_NAME} to reach RUNNING state."
+            exit 1
+          fi
+
+          for _ in {1..30}; do
+            if gcloud compute ssh "${GCE_INSTANCE_NAME}" --zone "${GCE_ZONE}" --command 'true' --quiet --ssh-flag='-o ConnectTimeout=5'; then
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "Timed out waiting for SSH on ${GCE_INSTANCE_NAME}."
+          exit 1
+
+      - name: Prepare application files
+        if: inputs.prepare_command != ''
+        shell: bash
+        run: ${{ inputs.prepare_command }}
+
+      - name: Pack and upload artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tar_args=(--exclude=.git --exclude=.github --exclude=.env)
+          while IFS= read -r exclude; do
+            [[ -n "${exclude}" ]] && tar_args+=("--exclude=${exclude}")
+          done <<< "${{ inputs.artifact_excludes }}"
+          tar -C "$GITHUB_WORKSPACE" -czf /tmp/app.tar.gz "${tar_args[@]}" .
+
+          upload_files=(/tmp/app.tar.gz)
+          while IFS= read -r file; do
+            [[ -n "${file}" ]] && upload_files+=("${file}")
+          done <<< "${{ inputs.additional_upload_files }}"
+          gcloud compute scp "${upload_files[@]}" "${GCE_INSTANCE_NAME}:~" --zone "${GCE_ZONE}"
+
+      - name: Deploy on GCE
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_command="$(cat <<'REMOTE_COMMAND'
+          DEPLOY_SERVER='${{ inputs.deploy_server }}'
+          DEPLOY_CLIENT='${{ inputs.deploy_client }}'
+          ${{ inputs.remote_deploy_command }}
+          REMOTE_COMMAND
+          )"
+          gcloud compute ssh "${GCE_INSTANCE_NAME}" --zone "${GCE_ZONE}" --command "$remote_command"
+
+      - name: Clean up remote artifact
+        if: always()
+        shell: bash
+        run: gcloud compute ssh "${GCE_INSTANCE_NAME}" --zone "${GCE_ZONE}" --command 'rm -f ~/app.tar.gz' || true
