@@ -12,18 +12,8 @@ permissions:
 jobs:
   actionlint:
     runs-on: ubuntu-latest
+    container:
+      image: docker.io/rhysd/actionlint:1.7.7
     steps:
-      - name: Checkout repository
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh repo clone "$GITHUB_REPOSITORY" ./repo -- --depth=1
-      - name: Install actionlint
-        run: |
-          version=$(curl -sSL https://api.github.com/repos/rhysd/actionlint/releases/latest | grep -oP '"tag_name": "\K[^"]+')
-          curl -sSL "https://github.com/rhysd/actionlint/releases/download/${version}/actionlint_${version#v}_linux_amd64.tar.gz" -o actionlint.tar.gz
-          tar xzf actionlint.tar.gz actionlint
-          sudo mv actionlint /usr/local/bin/actionlint
-          actionlint --version
       - name: Run actionlint
-        working-directory: ./repo
-        run: actionlint -color
+        run: actionlint -color "${GITHUB_WORKSPACE}/.github/workflows/"
