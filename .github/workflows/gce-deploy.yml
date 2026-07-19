@@ -156,6 +156,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           token: ${{ steps.app-token.outputs.token || github.token }}
           submodules: ${{ inputs.checkout_submodules && 'recursive' || 'false' }}
+          allow-unsafe-pr-checkout: true
 
       - name: Guard deploy actor is allowed member
         if: inputs.enforce_deploy_team
