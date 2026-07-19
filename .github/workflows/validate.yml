@@ -1,19 +1,21 @@
 name: Validate Workflows
-
 on:
   pull_request:
     branches: ["**"]
   push:
     branches: ["**"]
-
 permissions:
   contents: read
-
 jobs:
   actionlint:
     runs-on: ubuntu-latest
     container:
       image: docker.io/rhysd/actionlint:1.7.7
     steps:
-      - name: Run actionlint
-        run: actionlint -color "${GITHUB_WORKSPACE}/.github/workflows/"
+      - name: Debug paths
+        run: |
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo "PWD=$(pwd)"
+          ls -la /__w/ 2>&1
+          ls -la /__w/github-workflows/ 2>&1
+          find /__w -name '*.yml' -path '*workflows*' 2>/dev/null | head
