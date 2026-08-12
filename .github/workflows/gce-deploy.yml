@@ -126,10 +126,13 @@ on:
 
 jobs:
   deploy:
-    # A reusable workflow inherits the caller event.  Deploy only from the
-    # protected main branch; a pull_request merge ref is a synthetic commit
-    # containing untrusted PR code.
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    # Production runs use protected main. Development and staging may use
+    # the explicitly authorized dev/stg pull-request label workflow.
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+       (github.event.label.name == 'dev' || github.event.label.name == 'stg'))
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.environment_name }}
@@ -161,7 +164,7 @@ jobs:
           private-key: ${{ secrets[inputs.github_app_private_key_secret] }}
           owner: ${{ github.repository_owner }}
 
-      - name: Checkout pushed main commit
+      - name: Checkout deployment commit
         uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
