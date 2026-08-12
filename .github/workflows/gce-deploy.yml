@@ -126,9 +126,10 @@ on:
 
 jobs:
   deploy:
-    # A reusable workflow inherits the caller event.  Never deploy from a
-    # pull_request merge ref, which is a synthetic commit containing PR code.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # A reusable workflow inherits the caller event.  Deploy only from the
+    # protected main branch; a pull_request merge ref is a synthetic commit
+    # containing untrusted PR code.
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.environment_name }}
