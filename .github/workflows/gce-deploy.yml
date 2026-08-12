@@ -18,6 +18,11 @@ on:
         required: false
         type: string
         default: deg-develop
+      environment_name:
+        description: Deployment environment used by the actual deploy job.
+        required: false
+        type: string
+        default: unprotected
       start_instance:
         description: Start a stopped GCE instance and wait for SSH readiness.
         required: true
@@ -121,7 +126,12 @@ on:
 
 jobs:
   deploy:
+    # A reusable workflow inherits the caller event.  Never deploy from a
+    # pull_request merge ref, which is a synthetic commit containing PR code.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment_name }}
     permissions:
       contents: read
       id-token: write
@@ -150,7 +160,7 @@ jobs:
           private-key: ${{ secrets[inputs.github_app_private_key_secret] }}
           owner: ${{ github.repository_owner }}
 
-      - name: Checkout merge commit
+      - name: Checkout pushed main commit
         uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
