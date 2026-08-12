@@ -9,15 +9,20 @@ on:
         type: boolean
         default: false
       enforce_deploy_team:
-        description: Require the actor to belong to the configured organization team.
+        description: Require the actor (and PR author on pull_request) to belong to the configured organization team.
         required: false
         type: boolean
-        default: false
+        default: true
       deploy_team_slug:
         description: Organization team allowed to deploy when enforcement is enabled.
         required: false
         type: string
         default: deg-develop
+      environment_name:
+        description: Deployment environment used by the actual deploy job.
+        required: false
+        type: string
+        default: unprotected
       start_instance:
         description: Start a stopped GCE instance and wait for SSH readiness.
         required: true
@@ -121,7 +126,12 @@ on:
 
 jobs:
   deploy:
+    # A reusable workflow inherits the caller event.  Never deploy from a
+    # pull_request merge ref, which is a synthetic commit containing PR code.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment_name }}
     permissions:
       contents: read
       id-token: write
@@ -143,25 +153,26 @@ jobs:
     steps:
       - name: Create GitHub App token
         id: app-token
-        if: inputs.enforce_deploy_team || inputs.checkout_submodules
+        if: (inputs.enforce_deploy_team || inputs.checkout_submodules) && inputs.github_app_id_secret != '' && inputs.github_app_private_key_secret != ''
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets[inputs.github_app_id_secret] }}
           private-key: ${{ secrets[inputs.github_app_private_key_secret] }}
           owner: ${{ github.repository_owner }}
 
-      - name: Checkout PR head
+      - name: Checkout pushed main commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          token: ${{ github.token }}
+          ref: ${{ github.sha }}
+          token: ${{ inputs.checkout_submodules && steps.app-token.outputs.token || github.token }}
           submodules: ${{ inputs.checkout_submodules && 'recursive' || 'false' }}
-          allow-unsafe-pr-checkout: true
 
       - name: Guard deploy actor is allowed member
+        id: deploy-guard
         if: inputs.enforce_deploy_team
         env:
           DEPLOY_ACTOR: ${{ github.actor }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           DEPLOY_TEAM_SLUG: ${{ inputs.deploy_team_slug }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ORG_NAME: ${{ github.repository_owner }}
@@ -174,6 +185,13 @@ jobs:
             echo "Actor '$DEPLOY_ACTOR' is not in ${ORG_NAME}/${DEPLOY_TEAM_SLUG}. Deployment is blocked."
             exit 1
           fi
+
+          if [[ -n "${PR_AUTHOR}" ]] && ! grep -Fxq "$PR_AUTHOR" <<<"$TEAM_MEMBERS"; then
+            echo "PR author '$PR_AUTHOR' is not in ${ORG_NAME}/${DEPLOY_TEAM_SLUG}. Deployment is blocked."
+            exit 1
+          fi
+
+          echo "allowed=true" >> "$GITHUB_OUTPUT"
 
       - name: Validate required variables
         shell: bash
@@ -228,7 +246,7 @@ jobs:
           exit 1
 
       - name: Prepare application files
-        if: inputs.prepare_command != ''
+        if: inputs.prepare_command != '' && (steps.deploy-guard.outputs.allowed == 'true' || inputs.enforce_deploy_team == false)
         shell: bash
         run: ${{ inputs.prepare_command }}
 
@@ -250,6 +268,7 @@ jobs:
           gcloud compute scp "${upload_files[@]}" "${GCE_INSTANCE_NAME}:~" --zone "${GCE_ZONE}"
 
       - name: Deploy on GCE
+        if: steps.deploy-guard.outputs.allowed == 'true' || inputs.enforce_deploy_team == false
         shell: bash
         env:
           REMOTE_DEPLOY_COMMAND: ${{ inputs.remote_deploy_command }}
