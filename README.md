@@ -4,18 +4,18 @@ Reusable GitHub Actions workflows for deg-labs repositories.
 
 `gce-deploy.yml` authenticates with Workload Identity Federation, starts non-production GCE instances when necessary, waits for SSH readiness, uploads an application archive, and runs the caller-provided deployment command.
 
-The called job selects the caller repository's GitHub Environment from the required `environment_name` input. Each deployment repository should define `dev`, `stg`, and `prd` Environments as applicable, using the same secret names in each Environment:
+The called job selects the caller repository's GitHub Environment from the required `environment_name` input. Environment-specific deployment values are stored as repository or organization secrets with an environment prefix:
 
 ```text
-GCE_INSTANCE_NAME
-GCE_ZONE
-GCP_SA_EMAIL
-GCP_WIF_PROVIDER
-APP_ENV                 # applications that need it
-DISCORD_WEBHOOK_URL     # applications that need it
-ADDRESSES_TXT           # applications that need it
+DEV_GCE_INSTANCE_NAME / STG_GCE_INSTANCE_NAME / PRD_GCE_INSTANCE_NAME
+DEV_GCE_ZONE          / STG_GCE_ZONE          / PRD_GCE_ZONE
+DEV_GCP_SA_EMAIL      / STG_GCP_SA_EMAIL      / PRD_GCP_SA_EMAIL
+DEV_GCP_WIF_PROVIDER  / STG_GCP_WIF_PROVIDER  / PRD_GCP_WIF_PROVIDER
+DEV_APP_ENV            / STG_APP_ENV            / PRD_APP_ENV
+DEV_DISCORD_WEBHOOK_URL / STG_DISCORD_WEBHOOK_URL / PRD_DISCORD_WEBHOOK_URL
+DEV_ADDRESSES_TXT      / STG_ADDRESSES_TXT      / PRD_ADDRESSES_TXT
 ```
 
-`ORG_GH_APP_ID` and `ORG_GH_APP_PRIVATE_KEY` remain repository or organization secrets. Callers only select the environment and provide application-specific deployment commands; they do not pass environment-specific secret names.
+`ORG_GH_APP_ID` and `ORG_GH_APP_PRIVATE_KEY` remain repository or organization secrets. Callers only select the environment and provide application-specific deployment commands; they do not pass environment-specific secret names. Existing `PROD_*` names are accepted as a production compatibility fallback.
 
-The values are environment-specific even though the new secret names are identical. For example, `dev/GCP_WIF_PROVIDER`, `stg/GCP_WIF_PROVIDER`, and `prd/GCP_WIF_PROVIDER` may all contain different providers. During migration, the workflow falls back to the legacy `DEV_*`, `STG_*`, `PRD_*`, and `PROD_*` repository secrets when the corresponding Environment secret is not present.
+The `dev`, `stg`, and `prd` Environment is still used for deployment protection and status; it is not used to make the secret names common.

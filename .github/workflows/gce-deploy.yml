@@ -74,12 +74,12 @@ jobs:
       id-token: write
     env:
       DEPLOY_ENV: ${{ inputs.environment_name }}
-      # Prefer Environment secrets. Fall back to the legacy environment-prefixed
-      # repository secrets while each caller repository is being migrated.
+      # Environment-specific values use the DEV_*, STG_*, and PRD_* secret
+      # prefixes. PROD_* remains a compatibility fallback for existing callers.
       GCE_INSTANCE_NAME: >-
         ${{
-          secrets.GCE_INSTANCE_NAME ||
-          secrets[format('{0}_GCE_INSTANCE_NAME',
+          secrets[format(
+            '{0}_GCE_INSTANCE_NAME',
             inputs.environment_name == 'dev' && 'DEV' ||
             inputs.environment_name == 'stg' && 'STG' ||
             'PRD'
@@ -88,18 +88,18 @@ jobs:
         }}
       GCE_ZONE: >-
         ${{
-          secrets.GCE_ZONE ||
-          secrets[format('{0}_GCE_ZONE',
+          secrets[format(
+            '{0}_GCE_ZONE',
             inputs.environment_name == 'dev' && 'DEV' ||
             inputs.environment_name == 'stg' && 'STG' ||
             'PRD'
-          )] ||
+          )] || secrets.GCE_ZONE ||
           (inputs.environment_name == 'prd' && secrets.PROD_GCE_ZONE || '')
         }}
       GCP_SA_EMAIL: >-
         ${{
-          secrets.GCP_SA_EMAIL ||
-          secrets[format('{0}_GCP_SA_EMAIL',
+          secrets[format(
+            '{0}_GCP_SA_EMAIL',
             inputs.environment_name == 'dev' && 'DEV' ||
             inputs.environment_name == 'stg' && 'STG' ||
             'PRD'
@@ -108,8 +108,8 @@ jobs:
         }}
       GCP_WIF_PROVIDER: >-
         ${{
-          secrets.GCP_WIF_PROVIDER ||
-          secrets[format('{0}_GCP_WIF_PROVIDER',
+          secrets[format(
+            '{0}_GCP_WIF_PROVIDER',
             inputs.environment_name == 'dev' && 'DEV' ||
             inputs.environment_name == 'stg' && 'STG' ||
             'PRD'
@@ -118,8 +118,8 @@ jobs:
         }}
       APP_ENV: >-
         ${{
-          secrets.APP_ENV ||
-          secrets[format('{0}_APP_ENV',
+          secrets[format(
+            '{0}_APP_ENV',
             inputs.environment_name == 'dev' && 'DEV' ||
             inputs.environment_name == 'stg' && 'STG' ||
             'PRD'
@@ -128,8 +128,8 @@ jobs:
         }}
       DISCORD_WEBHOOK_URL: >-
         ${{
-          secrets.DISCORD_WEBHOOK_URL ||
-          secrets[format('{0}_DISCORD_WEBHOOK_URL',
+          secrets[format(
+            '{0}_DISCORD_WEBHOOK_URL',
             inputs.environment_name == 'dev' && 'DEV' ||
             inputs.environment_name == 'stg' && 'STG' ||
             'PRD'
@@ -138,8 +138,8 @@ jobs:
         }}
       ADDRESSES_TXT: >-
         ${{
-          secrets.ADDRESSES_TXT ||
-          secrets[format('{0}_ADDRESSES_TXT',
+          secrets[format(
+            '{0}_ADDRESSES_TXT',
             inputs.environment_name == 'dev' && 'DEV' ||
             inputs.environment_name == 'stg' && 'STG' ||
             'PRD'
