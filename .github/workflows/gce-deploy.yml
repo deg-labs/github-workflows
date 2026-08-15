@@ -20,75 +20,8 @@ on:
         default: deg-develop
       environment_name:
         description: Deployment environment used by the actual deploy job.
-        required: false
-        type: string
-        default: unprotected
-      start_instance:
-        description: Start a stopped GCE instance and wait for SSH readiness.
-        required: true
-        type: boolean
-      gce_instance_secret:
-        description: Name of the caller secret containing the GCE instance name.
         required: true
         type: string
-      gce_zone_secret:
-        description: Name of the caller secret containing the GCE zone.
-        required: false
-        type: string
-        default: ''
-      gce_zone:
-        description: Optional literal GCE zone used when the caller has no zone secret.
-        required: false
-        type: string
-        default: ''
-      gcp_sa_email_secret:
-        description: Name of the caller secret containing the workload identity service account email.
-        required: true
-        type: string
-      gcp_wif_provider_secret:
-        description: Name of the caller secret containing the workload identity provider.
-        required: true
-        type: string
-      app_env_secret:
-        description: Optional caller secret name whose value is exposed to prepare_command as APP_ENV.
-        required: false
-        type: string
-        default: ''
-      discord_webhook_secret:
-        description: Optional caller secret name exposed to prepare_command as DISCORD_WEBHOOK_URL.
-        required: false
-        type: string
-        default: ''
-      addresses_secret:
-        description: Optional caller secret name exposed to prepare_command as ADDRESSES_TXT.
-        required: false
-        type: string
-        default: ''
-      beszel_agent_key_secret:
-        description: Optional caller secret name exposed to prepare_command as DEV_KEY.
-        required: false
-        type: string
-        default: ''
-      beszel_agent_token_secret:
-        description: Optional caller secret name exposed to prepare_command as DEV_TOKEN.
-        required: false
-        type: string
-        default: ''
-      beszel_hub_url_secret:
-        description: Optional caller secret name exposed to prepare_command as DEV_HUB_URL.
-        required: false
-        type: string
-        default: ''
-      github_app_id_secret:
-        description: Optional caller secret name for the GitHub App ID.
-        required: false
-        type: string
-        default: ''
-      github_app_private_key_secret:
-        description: Optional caller secret name for the GitHub App private key.
-        required: false
-        type: string
-        default: ''
       notification_suppression_seconds:
         description: Optional value exposed to prepare_command.
         required: false
@@ -126,13 +59,13 @@ on:
 
 jobs:
   deploy:
-    # Production runs use protected main. Development and staging may use
-    # the explicitly authorized dev/stg pull-request label workflow.
+    # Caller workflows decide which labels are accepted for each repository.
     if: |
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
-       (github.event.label.name == 'dev' || github.event.label.name == 'stg'))
+       (github.event.label.name == 'dev' || github.event.label.name == 'stg' ||
+        github.event.label.name == 'prd'))
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.environment_name }}
@@ -140,28 +73,40 @@ jobs:
       contents: read
       id-token: write
     env:
-      GCE_INSTANCE_NAME: ${{ secrets[inputs.gce_instance_secret] }}
-      GCE_ZONE: ${{ inputs.gce_zone || secrets[inputs.gce_zone_secret] }}
-      GCP_SA_EMAIL: ${{ secrets[inputs.gcp_sa_email_secret] }}
-      GCP_WIF_PROVIDER: ${{ secrets[inputs.gcp_wif_provider_secret] }}
-      APP_ENV: ${{ secrets[inputs.app_env_secret] }}
-      DISCORD_WEBHOOK_URL: ${{ secrets[inputs.discord_webhook_secret] }}
-      ADDRESSES_TXT: ${{ secrets[inputs.addresses_secret] }}
-      DEV_KEY: ${{ secrets[inputs.beszel_agent_key_secret] }}
-      DEV_TOKEN: ${{ secrets[inputs.beszel_agent_token_secret] }}
-      DEV_HUB_URL: ${{ secrets[inputs.beszel_hub_url_secret] }}
+      DEPLOY_ENV: ${{ inputs.environment_name }}
+      GCE_INSTANCE_NAME: ${{ secrets.GCE_INSTANCE_NAME }}
+      GCE_ZONE: ${{ secrets.GCE_ZONE }}
+      GCP_SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
+      GCP_WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}
+      APP_ENV: ${{ secrets.APP_ENV }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      ADDRESSES_TXT: ${{ secrets.ADDRESSES_TXT }}
+      DEPLOY_APP_ID: ${{ secrets.ORG_GH_APP_ID }}
+      DEPLOY_APP_PRIVATE_KEY: ${{ secrets.ORG_GH_APP_PRIVATE_KEY }}
       NOTIFICATION_SUPPRESSION_SECONDS: ${{ inputs.notification_suppression_seconds }}
       DEPLOY_SERVER: ${{ inputs.deploy_server }}
       DEPLOY_CLIENT: ${{ inputs.deploy_client }}
 
     steps:
+      - name: Validate deployment environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${DEPLOY_ENV}" in
+            dev|stg|prd) ;;
+            *)
+              echo "Unsupported deployment environment: ${DEPLOY_ENV}" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Create GitHub App token
         id: app-token
-        if: (inputs.enforce_deploy_team || inputs.checkout_submodules) && inputs.github_app_id_secret != '' && inputs.github_app_private_key_secret != ''
+        if: (inputs.enforce_deploy_team || inputs.checkout_submodules) && env.DEPLOY_APP_ID != '' && env.DEPLOY_APP_PRIVATE_KEY != ''
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets[inputs.github_app_id_secret] }}
-          private-key: ${{ secrets[inputs.github_app_private_key_secret] }}
+          app-id: ${{ env.DEPLOY_APP_ID }}
+          private-key: ${{ env.DEPLOY_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
       - name: Checkout deployment commit
@@ -217,7 +162,7 @@ jobs:
         uses: google-github-actions/setup-gcloud@v3
 
       - name: Start non-production GCE instance and wait for SSH
-        if: inputs.start_instance
+        if: inputs.environment_name != 'prd'
         shell: bash
         run: |
           set -euo pipefail
