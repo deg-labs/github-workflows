@@ -74,13 +74,78 @@ jobs:
       id-token: write
     env:
       DEPLOY_ENV: ${{ inputs.environment_name }}
-      GCE_INSTANCE_NAME: ${{ secrets.GCE_INSTANCE_NAME }}
-      GCE_ZONE: ${{ secrets.GCE_ZONE }}
-      GCP_SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
-      GCP_WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}
-      APP_ENV: ${{ secrets.APP_ENV }}
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      ADDRESSES_TXT: ${{ secrets.ADDRESSES_TXT }}
+      # Prefer Environment secrets. Fall back to the legacy environment-prefixed
+      # repository secrets while each caller repository is being migrated.
+      GCE_INSTANCE_NAME: >-
+        ${{
+          secrets.GCE_INSTANCE_NAME ||
+          secrets[format('{0}_GCE_INSTANCE_NAME',
+            inputs.environment_name == 'dev' && 'DEV' ||
+            inputs.environment_name == 'stg' && 'STG' ||
+            'PRD'
+          )] ||
+          (inputs.environment_name == 'prd' && secrets.PROD_GCE_INSTANCE_NAME || '')
+        }}
+      GCE_ZONE: >-
+        ${{
+          secrets.GCE_ZONE ||
+          secrets[format('{0}_GCE_ZONE',
+            inputs.environment_name == 'dev' && 'DEV' ||
+            inputs.environment_name == 'stg' && 'STG' ||
+            'PRD'
+          )] ||
+          (inputs.environment_name == 'prd' && secrets.PROD_GCE_ZONE || '')
+        }}
+      GCP_SA_EMAIL: >-
+        ${{
+          secrets.GCP_SA_EMAIL ||
+          secrets[format('{0}_GCP_SA_EMAIL',
+            inputs.environment_name == 'dev' && 'DEV' ||
+            inputs.environment_name == 'stg' && 'STG' ||
+            'PRD'
+          )] ||
+          (inputs.environment_name == 'prd' && secrets.PROD_GCP_SA_EMAIL || '')
+        }}
+      GCP_WIF_PROVIDER: >-
+        ${{
+          secrets.GCP_WIF_PROVIDER ||
+          secrets[format('{0}_GCP_WIF_PROVIDER',
+            inputs.environment_name == 'dev' && 'DEV' ||
+            inputs.environment_name == 'stg' && 'STG' ||
+            'PRD'
+          )] ||
+          (inputs.environment_name == 'prd' && secrets.PROD_GCP_WIF_PROVIDER || '')
+        }}
+      APP_ENV: >-
+        ${{
+          secrets.APP_ENV ||
+          secrets[format('{0}_APP_ENV',
+            inputs.environment_name == 'dev' && 'DEV' ||
+            inputs.environment_name == 'stg' && 'STG' ||
+            'PRD'
+          )] ||
+          (inputs.environment_name == 'prd' && secrets.PROD_APP_ENV || '')
+        }}
+      DISCORD_WEBHOOK_URL: >-
+        ${{
+          secrets.DISCORD_WEBHOOK_URL ||
+          secrets[format('{0}_DISCORD_WEBHOOK_URL',
+            inputs.environment_name == 'dev' && 'DEV' ||
+            inputs.environment_name == 'stg' && 'STG' ||
+            'PRD'
+          )] ||
+          (inputs.environment_name == 'prd' && secrets.PROD_DISCORD_WEBHOOK_URL || '')
+        }}
+      ADDRESSES_TXT: >-
+        ${{
+          secrets.ADDRESSES_TXT ||
+          secrets[format('{0}_ADDRESSES_TXT',
+            inputs.environment_name == 'dev' && 'DEV' ||
+            inputs.environment_name == 'stg' && 'STG' ||
+            'PRD'
+          )] ||
+          (inputs.environment_name == 'prd' && secrets.PROD_ADDRESSES_TXT || '')
+        }}
       DEPLOY_APP_ID: ${{ secrets.ORG_GH_APP_ID }}
       DEPLOY_APP_PRIVATE_KEY: ${{ secrets.ORG_GH_APP_PRIVATE_KEY }}
       NOTIFICATION_SUPPRESSION_SECONDS: ${{ inputs.notification_suppression_seconds }}

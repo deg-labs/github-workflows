@@ -17,3 +17,5 @@ ADDRESSES_TXT           # applications that need it
 ```
 
 `ORG_GH_APP_ID` and `ORG_GH_APP_PRIVATE_KEY` remain repository or organization secrets. Callers only select the environment and provide application-specific deployment commands; they do not pass environment-specific secret names.
+
+The values are environment-specific even though the new secret names are identical. For example, `dev/GCP_WIF_PROVIDER`, `stg/GCP_WIF_PROVIDER`, and `prd/GCP_WIF_PROVIDER` may all contain different providers. During migration, the workflow falls back to the legacy `DEV_*`, `STG_*`, `PRD_*`, and `PROD_*` repository secrets when the corresponding Environment secret is not present.
