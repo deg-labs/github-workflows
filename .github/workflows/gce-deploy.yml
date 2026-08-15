@@ -22,6 +22,21 @@ on:
         description: Deployment environment used by the actual deploy job.
         required: true
         type: string
+      app_env_secret:
+        description: Optional caller secret name whose value is exposed to prepare_command as APP_ENV.
+        required: false
+        type: string
+        default: ''
+      discord_webhook_secret:
+        description: Optional caller secret name whose value is exposed to prepare_command as DISCORD_WEBHOOK_URL.
+        required: false
+        type: string
+        default: ''
+      addresses_secret:
+        description: Optional caller secret name whose value is exposed to prepare_command as ADDRESSES_TXT.
+        required: false
+        type: string
+        default: ''
       notification_suppression_seconds:
         description: Optional value exposed to prepare_command.
         required: false
@@ -116,36 +131,9 @@ jobs:
           )] ||
           (inputs.environment_name == 'prd' && secrets.PROD_GCP_WIF_PROVIDER || '')
         }}
-      APP_ENV: >-
-        ${{
-          secrets[format(
-            '{0}_APP_ENV',
-            inputs.environment_name == 'dev' && 'DEV' ||
-            inputs.environment_name == 'stg' && 'STG' ||
-            'PRD'
-          )] ||
-          (inputs.environment_name == 'prd' && secrets.PROD_APP_ENV || '')
-        }}
-      DISCORD_WEBHOOK_URL: >-
-        ${{
-          secrets[format(
-            '{0}_DISCORD_WEBHOOK_URL',
-            inputs.environment_name == 'dev' && 'DEV' ||
-            inputs.environment_name == 'stg' && 'STG' ||
-            'PRD'
-          )] ||
-          (inputs.environment_name == 'prd' && secrets.PROD_DISCORD_WEBHOOK_URL || '')
-        }}
-      ADDRESSES_TXT: >-
-        ${{
-          secrets[format(
-            '{0}_ADDRESSES_TXT',
-            inputs.environment_name == 'dev' && 'DEV' ||
-            inputs.environment_name == 'stg' && 'STG' ||
-            'PRD'
-          )] ||
-          (inputs.environment_name == 'prd' && secrets.PROD_ADDRESSES_TXT || '')
-        }}
+      APP_ENV: ${{ inputs.app_env_secret != '' && secrets[inputs.app_env_secret] || '' }}
+      DISCORD_WEBHOOK_URL: ${{ inputs.discord_webhook_secret != '' && secrets[inputs.discord_webhook_secret] || '' }}
+      ADDRESSES_TXT: ${{ inputs.addresses_secret != '' && secrets[inputs.addresses_secret] || '' }}
       DEPLOY_APP_ID: ${{ secrets.ORG_GH_APP_ID }}
       DEPLOY_APP_PRIVATE_KEY: ${{ secrets.ORG_GH_APP_PRIVATE_KEY }}
       NOTIFICATION_SUPPRESSION_SECONDS: ${{ inputs.notification_suppression_seconds }}
