@@ -9,7 +9,7 @@ on:
         type: boolean
         default: false
       enforce_deploy_team:
-        description: 実行者（pull_request イベントでは PR 作成者）が、指定された Organization チームに所属していることを必須にします。
+        description: 実行者のチーム所属を必須にします。PR 作成者は同じチームのメンバーまたは dependabot[bot] を許可します。
         required: false
         type: boolean
         default: true
@@ -184,12 +184,13 @@ jobs:
 
           TEAM_MEMBERS="$(gh api "orgs/${ORG_NAME}/teams/${DEPLOY_TEAM_SLUG}/members" --jq '.[].login')"
           if ! grep -Fxq "$DEPLOY_ACTOR" <<<"$TEAM_MEMBERS"; then
-            echo "Actor '$DEPLOY_ACTOR' is not in ${ORG_NAME}/${DEPLOY_TEAM_SLUG}. Deployment is blocked."
+            echo "Actor '$DEPLOY_ACTOR' is not in ${ORG_NAME}/${DEPLOY_TEAM_SLUG}. Deployment is blocked." >&2
             exit 1
           fi
 
-          if [[ -n "${PR_AUTHOR}" ]] && ! grep -Fxq "$PR_AUTHOR" <<<"$TEAM_MEMBERS"; then
-            echo "PR author '$PR_AUTHOR' is not in ${ORG_NAME}/${DEPLOY_TEAM_SLUG}. Deployment is blocked."
+          # Dependabot PRs still require a team member to trigger deployment.
+          if [[ -n "${PR_AUTHOR}" && "${PR_AUTHOR}" != 'dependabot[bot]' ]] && ! grep -Fxq "$PR_AUTHOR" <<<"$TEAM_MEMBERS"; then
+            echo "PR author '$PR_AUTHOR' is not in ${ORG_NAME}/${DEPLOY_TEAM_SLUG} or the allowed bots. Deployment is blocked." >&2
             exit 1
           fi
 
