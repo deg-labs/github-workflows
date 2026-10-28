@@ -34,7 +34,7 @@ def validate_archive(archive, directory):
             if normalized in seen:
                 fail(f"Duplicate archive member: {member.name}")
             seen.add(normalized)
-            if any(part in (".git", ".env") for part in path.parts):
+            if any(part == ".git" or part == ".env" or part.startswith(".env.") for part in path.parts):
                 fail(f"Forbidden archive member: {member.name}")
             total += member.size
             if total > 512 * 1024 * 1024:
@@ -80,6 +80,11 @@ def main():
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             validate_archive(sys.argv[1], root)
+            if len(sys.argv) > 2:
+                if not re.fullmatch(r"[0-9a-f]{40}", sys.argv[2]):
+                    fail("Invalid expected source commit")
+                if (root / ".gce-deploy-source").read_text().strip() != sys.argv[2]:
+                    fail("Artifact source commit does not match the workflow commit")
             validate_compose(root)
     except (ValueError, OSError, tarfile.TarError, json.JSONDecodeError) as exc:
         print(f"Validation failed: {exc}", file=sys.stderr)
