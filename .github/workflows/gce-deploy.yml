@@ -3,6 +3,11 @@ name: Deploy application to GCE
 on:
   workflow_call:
     inputs:
+      deploy_mode:
+        description: legacy, compose, scheduled-container または package-update を指定します。
+        required: false
+        type: string
+        default: legacy
       checkout_submodules:
         description: サブモジュールを再帰的にチェックアウトします。
         required: false
@@ -69,8 +74,9 @@ on:
         default: ''
       remote_deploy_command:
         description: アーティファクトのアップロード後に GCE インスタンス上で実行するシェルコマンドです。
-        required: true
+        required: false
         type: string
+        default: ''
 
 jobs:
   deploy:
@@ -89,6 +95,8 @@ jobs:
       id-token: write
     env:
       DEPLOY_ENV: ${{ inputs.environment_name }}
+      DEPLOY_MODE: ${{ inputs.deploy_mode }}
+      CALLER_REPOSITORY: ${{ github.repository }}
       # Environment-specific values use the DEV_*, STG_*, and PRD_* secret
       # prefixes. PROD_* remains a compatibility fallback for existing callers.
       GCE_INSTANCE_NAME: >-
@@ -151,6 +159,34 @@ jobs:
               echo "Unsupported deployment environment: ${DEPLOY_ENV}" >&2
               exit 1
               ;;
+          esac
+
+      - name: Validate deployment mode
+        env:
+          PREPARE_COMMAND: ${{ inputs.prepare_command }}
+          REMOTE_COMMAND: ${{ inputs.remote_deploy_command }}
+          EXTRA_UPLOADS: ${{ inputs.additional_upload_files }}
+          EXCLUDES: ${{ inputs.artifact_excludes }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_LABEL: ${{ github.event.label.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_MODE:$CALLER_REPOSITORY" in
+            legacy:*)
+              [[ -n "$REMOTE_COMMAND" ]] || { echo 'remote_deploy_command is required for legacy mode.' >&2; exit 1; }
+              ;;
+            compose:deg-labs/hdm|compose:deg-labs/volatility-monorepo|compose:deg-labs/stock-theme-ranking-bot|scheduled-container:deg-labs/jsf-taisyaku|package-update:deg-labs/gce-package-maintenance)
+              if [[ -n "$PREPARE_COMMAND$REMOTE_COMMAND$EXTRA_UPLOADS$EXCLUDES" ]]; then
+                echo 'Command, upload and exclude inputs are not allowed in managed modes.' >&2
+                exit 1
+              fi
+              if [[ "$EVENT_NAME" == pull_request && "$EVENT_LABEL" != "$DEPLOY_ENV" ]]; then
+                echo 'PR label does not match the deployment environment.' >&2
+                exit 1
+              fi
+              ;;
+            *) echo 'Unsupported deployment mode or repository.' >&2; exit 1 ;;
           esac
 
       - name: Create GitHub App token
@@ -249,11 +285,37 @@ jobs:
           exit 1
 
       - name: Prepare application files
-        if: inputs.prepare_command != '' && (steps.deploy-guard.outputs.allowed == 'true' || inputs.enforce_deploy_team == false)
+        if: inputs.deploy_mode == 'legacy' && inputs.prepare_command != '' && (steps.deploy-guard.outputs.allowed == 'true' || inputs.enforce_deploy_team == false)
         shell: bash
         run: ${{ inputs.prepare_command }}
 
-      - name: Pack and upload artifacts
+      - name: Prepare managed application files
+        if: inputs.deploy_mode == 'compose' || inputs.deploy_mode == 'scheduled-container'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CALLER_REPOSITORY" in
+            deg-labs/volatility-monorepo)
+              # shellcheck disable=SC2016
+              sed -i 's/GOARCH=amd64/GOARCH="$(go env GOARCH)"/g' server/api/Dockerfile server/fetcher/Dockerfile
+              printf '%s\n' "$APP_ENV" > .env
+              ;;
+            deg-labs/hdm|deg-labs/stock-theme-ranking-bot|deg-labs/jsf-taisyaku)
+              if ! command -v envsubst >/dev/null; then
+                sudo apt-get update
+                sudo apt-get install -y gettext-base
+              fi
+              export DB_DIRECTORY='./data'
+              # shellcheck disable=SC2016
+              envsubst '$DEPLOY_ENV $DISCORD_WEBHOOK_URL $NOTIFICATION_SUPPRESSION_SECONDS $DB_DIRECTORY' < .env.template > .env
+              if [[ "$CALLER_REPOSITORY" == deg-labs/hdm ]]; then
+                printf '%s' "$ADDRESSES_TXT" > addresses.txt
+              fi
+              ;;
+          esac
+
+      - name: Pack and upload legacy artifacts
+        if: inputs.deploy_mode == 'legacy'
         shell: bash
         run: |
           set -euo pipefail
@@ -270,8 +332,65 @@ jobs:
           done <<< "${{ inputs.additional_upload_files }}"
           gcloud compute scp "${upload_files[@]}" "${GCE_INSTANCE_NAME}:~" --zone "${GCE_ZONE}"
 
-      - name: Deploy on GCE
-        if: steps.deploy-guard.outputs.allowed == 'true' || inputs.enforce_deploy_team == false
+      - name: Pack and upload managed artifacts
+        if: inputs.deploy_mode == 'compose' || inputs.deploy_mode == 'scheduled-container'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar_args=(--exclude=.git --exclude=.github --exclude=.env)
+          case "$CALLER_REPOSITORY" in
+            deg-labs/hdm) tar_args+=(--exclude=data) ;;
+            deg-labs/volatility-monorepo) tar_args+=(--exclude=server/data --exclude=server/logs --exclude=client/ncmma/data --exclude=client/ncmma/logs --exclude=client/ncmma/cache) ;;
+            deg-labs/stock-theme-ranking-bot) tar_args+=(--exclude=data --exclude=logs --exclude=__pycache__ --exclude=.pytest_cache) ;;
+            deg-labs/jsf-taisyaku) tar_args+=(--exclude=__pycache__ --exclude=.claude --exclude=.devcontainer --exclude=.venv --exclude=tmp) ;;
+          esac
+          tar -C "$GITHUB_WORKSPACE" -czf /tmp/app.tar.gz "${tar_args[@]}" .
+          gcloud compute scp /tmp/app.tar.gz .env "${GCE_INSTANCE_NAME}:~" --zone "$GCE_ZONE"
+
+      - name: Deploy managed mode on GCE
+        if: inputs.deploy_mode != 'legacy'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CALLER_REPOSITORY" in
+            deg-labs/hdm) app=hdm ;;
+            deg-labs/volatility-monorepo) app=volatility-monorepo ;;
+            deg-labs/stock-theme-ranking-bot) app=stock-theme-ranking-bot ;;
+            deg-labs/jsf-taisyaku) app=jsf-taisyaku ;;
+            deg-labs/gce-package-maintenance) app=package-maintenance ;;
+            *) exit 1 ;;
+          esac
+          script=$(cat <<'REMOTE'
+          set -euo pipefail
+          if [[ "$1" == package-update ]]; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo apt-get -o APT::Update::Error-Mode=any update
+            sudo apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade
+            sudo systemd-run --unit=gce-package-maintenance-reboot --on-active=60s /usr/bin/systemctl reboot
+            exit 0
+          fi
+          target="/opt/apps/$2"
+          sudo mkdir -p "$target"
+          sudo chown -R "$(id -u):$(id -g)" "$target"
+          tar -xzf ~/app.tar.gz -C "$target"
+          mv -f ~/.env "$target/.env"
+          cd "$target"
+          sudo docker compose up -d --build --remove-orphans
+          if [[ "$1" == scheduled-container ]]; then
+            # Remove only the two legacy cron entries for this application.
+            cron=$(mktemp)
+            if sudo crontab -l > "$cron" 2>/dev/null; then
+              awk '!/\/opt\/apps\/jsf-taisyaku/ && !/jsf-taisyaku\.log/' "$cron" | sudo crontab -
+            fi
+            rm -f "$cron"
+          fi
+          REMOTE
+          )
+          encoded=$(printf '%s' "$script" | base64 -w 0)
+          gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command "echo '$encoded' | base64 -d | bash -s -- '$DEPLOY_MODE' '$app'"
+
+      - name: Deploy legacy command on GCE
+        if: inputs.deploy_mode == 'legacy' && (steps.deploy-guard.outputs.allowed == 'true' || inputs.enforce_deploy_team == false)
         shell: bash
         env:
           REMOTE_DEPLOY_COMMAND: ${{ inputs.remote_deploy_command }}
