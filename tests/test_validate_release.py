@@ -32,6 +32,13 @@ class ReleaseTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validator.validate_archive(self.archive(name, kind), dest)
 
+    def test_rejects_quoted_compose_include(self):
+        with tempfile.TemporaryDirectory() as dest:
+            root = Path(dest)
+            (root / 'compose.yaml').write_text('"include": remote.yaml\nservices: {}\n')
+            with self.assertRaises(ValueError):
+                validator.validate_compose(root)
+
     def test_rejects_privileged_service(self):
         with tempfile.TemporaryDirectory() as dest:
             root = Path(dest)

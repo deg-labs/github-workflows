@@ -47,9 +47,25 @@ def validate_compose(root):
     files = [root / n for n in ("compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml") if (root / n).is_file()]
     if len(files) != 1:
         fail("Exactly one root Compose file is required")
-    text = files[0].read_text()
-    if re.search(r"(?m)^\s*(include|extends|provider)\s*:", text):
-        fail("Compose include, extends and provider are not supported")
+    # Reject dynamic Compose imports before Docker reads any referenced files.
+    yaml_check = r"""
+require 'psych'
+def inspect_value(value)
+  case value
+  when Hash
+    value.each do |key, child|
+      abort 'unsupported key' if %w[include extends provider].include?(key.to_s)
+      inspect_value(child)
+    end
+  when Array
+    value.each { |child| inspect_value(child) }
+  end
+end
+inspect_value(Psych.safe_load(File.read(ARGV.fetch(0)), aliases: false))
+"""
+    precheck = subprocess.run(["ruby", "-e", yaml_check, str(files[0])], cwd=root, capture_output=True, text=True)
+    if precheck.returncode:
+        fail("Unsupported or invalid Compose YAML")
     proc = subprocess.run(["docker", "compose", "-f", str(files[0]), "config", "--no-interpolate", "--no-env-resolution", "--no-path-resolution", "--format", "json"], cwd=root, capture_output=True, text=True)
     if proc.returncode:
         fail("Invalid Compose configuration")
