@@ -1,0 +1,25 @@
+name: Test GCE deploy modes
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tested commit
+        env:
+          TEST_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TEST_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git fetch --depth=1 https://github.com/deg-labs/github-workflows.git "$TEST_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Test deployment modes
+        run: python3 -m unittest discover -s tests -v
