@@ -55,6 +55,7 @@ jobs:
       contents: read
     outputs:
       digest: ${{ steps.hash.outputs.digest }}
+      compose_file: ${{ steps.hash.outputs.compose_file }}
     steps:
       - name: Check artifact ID
         env:
@@ -283,6 +284,7 @@ jobs:
       - name: Deploy on GCE
         env:
           EXPECTED_DIGEST: ${{ needs.verify.outputs.digest }}
+          COMPOSE_FILE: ${{ needs.verify.outputs.compose_file }}
           RUNTIME_ENV_KEY: ${{ inputs.runtime_env_key }}
           RUNTIME_ENV_SECRET_NAME: ${{ inputs.runtime_env_secret }}
           RUNTIME_FILE_NAME: ${{ inputs.runtime_file_name }}
@@ -301,6 +303,7 @@ jobs:
             [[ "$DEPLOY_MODE" == compose && -n "$RUNTIME_FILE_SECRET_NAME" && -n "$RUNTIME_FILE" && "$RUNTIME_FILE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]
           fi
           if [[ "$DEPLOY_MODE" == compose ]]; then
+            case "$COMPOSE_FILE" in compose.yaml|compose.yml|docker-compose.yaml|docker-compose.yml) ;; *) exit 1 ;; esac
             [[ "$(sha256sum artifact/deploy.tar.gz | cut -d ' ' -f 1)" == "$EXPECTED_DIGEST" ]]
             if [[ -n "$RUNTIME_ENV_SECRET_NAME" && -z "$RUNTIME_ENV" ]]; then
               echo 'Runtime environment secret is empty or unavailable.' >&2
@@ -322,7 +325,7 @@ jobs:
             fi
           fi
           gcloud compute scp "${files[@]}" "${GCE_INSTANCE_NAME}:~" --zone "$GCE_ZONE"
-          gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command "bash ~/$prefix-script.sh '$DEPLOY_MODE' '$app' '$RUNTIME_FILE_NAME' '$prefix'"
+          gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command "bash ~/$prefix-script.sh '$DEPLOY_MODE' '$app' '$RUNTIME_FILE_NAME' '$prefix' '$COMPOSE_FILE'"
 
       - name: Clean up remote files
         if: always() && steps.auth.outcome == 'success'

@@ -4,6 +4,7 @@ mode=$1
 app=$2
 runtime_file=$3
 prefix=$4
+compose_file=$5
 [[ "$prefix" =~ ^gce-[0-9]+-[0-9]+$ ]] || exit 1
 if [[ "$mode" == package-update ]]; then
   export DEBIAN_FRONTEND=noninteractive
@@ -13,6 +14,7 @@ if [[ "$mode" == package-update ]]; then
   exit 0
 fi
 [[ "$mode" == compose && "$app" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || exit 1
+case "$compose_file" in compose.yaml|compose.yml|docker-compose.yaml|docker-compose.yml) ;; *) exit 1 ;; esac
 target="/opt/apps/$app"
 sudo mkdir -p "$target"
 sudo chown -R "$(id -u):$(id -g)" "$target"
@@ -25,4 +27,4 @@ if [[ -n "$runtime_file" ]]; then
   chmod 600 "$target/$runtime_file"
 fi
 cd "$target"
-sudo docker compose up -d --build --remove-orphans
+sudo docker compose -f "$compose_file" up -d --build --remove-orphans

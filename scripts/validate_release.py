@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate a deployment archive and its resolved Compose configuration."""
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -73,6 +74,7 @@ def validate_compose(root):
             fail("Custom volume driver options are not allowed")
     if config.get("secrets") or config.get("configs"):
         fail("Compose file-backed secrets and configs are not supported")
+    return files[0].name
 
 
 def main():
@@ -85,7 +87,10 @@ def main():
                     fail("Invalid expected source commit")
                 if (root / ".gce-deploy-source").read_text().strip() != sys.argv[2]:
                     fail("Artifact source commit does not match the workflow commit")
-            validate_compose(root)
+            compose_file = validate_compose(root)
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                    output.write(f"compose_file={compose_file}\n")
     except (ValueError, OSError, tarfile.TarError, json.JSONDecodeError) as exc:
         print(f"Validation failed: {exc}", file=sys.stderr)
         return 1
