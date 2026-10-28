@@ -48,6 +48,15 @@ class ReleaseTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validator.validate_compose(root)
 
+    def test_rejects_remote_build_context(self):
+        with tempfile.TemporaryDirectory() as dest:
+            root = Path(dest)
+            (root / 'compose.yaml').write_text('services: {}')
+            result = mock.Mock(returncode=0, stdout=json.dumps({'services': {'x': {'build': {'context': 'https://example.com/repo.git'}}}}))
+            with mock.patch.object(validator.subprocess, 'run', return_value=result):
+                with self.assertRaises(ValueError):
+                    validator.validate_compose(root)
+
     def test_rejects_unsafe_bind(self):
         with tempfile.TemporaryDirectory() as dest:
             root = Path(dest)

@@ -15,7 +15,7 @@ def fail(message):
 
 
 def relative(path):
-    if not isinstance(path, str) or not path or "\\" in path or "$" in path:
+    if not isinstance(path, str) or not path or "\\" in path or "$" in path or ":" in path:
         return False
     p = pathlib.PurePosixPath(path)
     return not p.is_absolute() and ".." not in p.parts
