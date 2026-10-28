@@ -378,11 +378,17 @@ jobs:
           sudo docker compose up -d --build --remove-orphans
           if [[ "$1" == scheduled-container ]]; then
             # Remove only the two legacy cron entries for this application.
-            cron=$(mktemp)
-            if sudo crontab -l > "$cron" 2>/dev/null; then
-              awk '!/\/opt\/apps\/jsf-taisyaku/ && !/jsf-taisyaku\.log/' "$cron" | sudo crontab -
+            if command -v crontab >/dev/null; then
+              cron=$(mktemp)
+              cron_error=$(mktemp)
+              if sudo env LC_ALL=C crontab -l > "$cron" 2> "$cron_error"; then
+                awk '!/\/opt\/apps\/jsf-taisyaku/ && !/jsf-taisyaku\.log/' "$cron" | sudo crontab -
+              elif ! grep -q '^no crontab for ' "$cron_error"; then
+                cat "$cron_error" >&2
+                exit 1
+              fi
+              rm -f "$cron" "$cron_error"
             fi
-            rm -f "$cron"
           fi
           REMOTE
           )
