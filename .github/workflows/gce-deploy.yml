@@ -4,14 +4,34 @@ on:
   workflow_call:
     inputs:
       deploy_mode:
-        description: compose、scheduled-container または package-update を指定します。
+        description: compose または package-update を指定します。
         required: true
         type: string
-      checkout_submodules:
-        description: サブモジュールを再帰的にチェックアウトします。
+      artifact_id:
+        description: 同じ実行で作成された Compose 用成果物の ID です。
+        type: string
         required: false
-        type: boolean
-        default: false
+        default: ''
+      runtime_env_secret:
+        description: 実行時の dotenv または単一値を含む Secret 名です。
+        type: string
+        required: false
+        default: ''
+      runtime_env_key:
+        description: 単一値を dotenv に変換する環境変数名です。省略時は Secret 全体を dotenv として扱います。
+        type: string
+        required: false
+        default: ''
+      runtime_file_secret:
+        description: 実行時ファイルの内容を含む Secret 名です。
+        type: string
+        required: false
+        default: ''
+      runtime_file_name:
+        description: 実行時ファイルの名前です。英数字、ピリオド、アンダースコア、ハイフンのみです。
+        type: string
+        required: false
+        default: ''
       enforce_deploy_team:
         description: 実行者のチーム所属を必須にします。PR 作成者は同じチームのメンバーまたは dependabot[bot] を許可します。
         required: false
@@ -26,36 +46,49 @@ on:
         description: 実際のデプロイジョブで使用するデプロイ環境です。
         required: true
         type: string
-      app_env_secret:
-        description: 値を APP_ENV として 設定ファイルの生成に使用する、呼び出し元の Secret 名（任意）です。
-        required: false
-        type: string
-        default: ''
-      discord_webhook_secret:
-        description: 値を DISCORD_WEBHOOK_URL として 設定ファイルの生成に使用する、呼び出し元の Secret 名（任意）です。
-        required: false
-        type: string
-        default: ''
-      addresses_secret:
-        description: 値を ADDRESSES_TXT として 設定ファイルの生成に使用する、呼び出し元の Secret 名（任意）です。
-        required: false
-        type: string
-        default: ''
-      notification_suppression_seconds:
-        description: 設定ファイルの生成に使用する値（任意）です。
-        required: false
-        type: string
-        default: '3600'
 
 jobs:
+  verify:
+    if: inputs.deploy_mode == 'compose'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.hash.outputs.digest }}
+    steps:
+      - name: Check artifact ID
+        env:
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ job['workflow_repository'] }}
+          ref: ${{ job['workflow_sha'] }}
+          path: shared
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          path: artifact
+      - name: Validate artifact and Compose policy
+        id: hash
+        run: |
+          set -euo pipefail
+          python3 shared/scripts/validate_release.py artifact/deploy.tar.gz
+          echo "digest=$(sha256sum artifact/deploy.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
   deploy:
-    # Caller workflows decide which labels are accepted for each repository.
+    needs: verify
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
-       (github.event.label.name == 'dev' || github.event.label.name == 'stg' ||
-        github.event.label.name == 'prd'))
+      always() &&
+      (inputs.deploy_mode == 'package-update' || needs.verify.result == 'success') &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+        (github.event.label.name == 'dev' || github.event.label.name == 'stg' ||
+         github.event.label.name == 'prd')))
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.environment_name }}
@@ -66,6 +99,7 @@ jobs:
       DEPLOY_ENV: ${{ inputs.environment_name }}
       DEPLOY_MODE: ${{ inputs.deploy_mode }}
       CALLER_REPOSITORY: ${{ github.repository }}
+      CALLER_NAME: ${{ github.event.repository.name }}
       # Environment-specific values use the DEV_*, STG_*, and PRD_* secret
       # prefixes. PROD_* remains a compatibility fallback for existing callers.
       GCE_INSTANCE_NAME: >-
@@ -108,12 +142,10 @@ jobs:
           )] ||
           (inputs.environment_name == 'prd' && secrets.PROD_GCP_WIF_PROVIDER || '')
         }}
-      APP_ENV: ${{ inputs.app_env_secret != '' && secrets[inputs.app_env_secret] || '' }}
-      DISCORD_WEBHOOK_URL: ${{ inputs.discord_webhook_secret != '' && secrets[inputs.discord_webhook_secret] || '' }}
-      ADDRESSES_TXT: ${{ inputs.addresses_secret != '' && secrets[inputs.addresses_secret] || '' }}
+      RUNTIME_ENV: ${{ inputs.runtime_env_secret != '' && secrets[inputs.runtime_env_secret] || '' }}
+      RUNTIME_FILE: ${{ inputs.runtime_file_secret != '' && secrets[inputs.runtime_file_secret] || '' }}
       DEPLOY_APP_ID: ${{ secrets.ORG_GH_APP_ID }}
       DEPLOY_APP_PRIVATE_KEY: ${{ secrets.ORG_GH_APP_PRIVATE_KEY }}
-      NOTIFICATION_SUPPRESSION_SECONDS: ${{ inputs.notification_suppression_seconds }}
 
     steps:
       - name: Validate deployment environment
@@ -135,31 +167,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "$DEPLOY_MODE:$CALLER_REPOSITORY" in
-            compose:deg-labs/hdm|compose:deg-labs/volatility-monorepo|compose:deg-labs/stock-theme-ranking-bot|scheduled-container:deg-labs/jsf-taisyaku|package-update:deg-labs/gce-package-maintenance)
-              if [[ "$EVENT_NAME" == pull_request && "$EVENT_LABEL" != "$DEPLOY_ENV" ]]; then
-                echo 'PR label does not match the deployment environment.' >&2
-                exit 1
-              fi
-              ;;
-            *) echo 'Unsupported deployment mode or repository.' >&2; exit 1 ;;
+          case "$DEPLOY_MODE" in
+            compose|package-update) ;;
+            *) echo 'Unsupported deployment mode.' >&2; exit 1 ;;
           esac
+          if [[ "$EVENT_NAME" == pull_request && "$EVENT_LABEL" != "$DEPLOY_ENV" ]]; then
+            echo 'PR label does not match the deployment environment.' >&2
+            exit 1
+          fi
+          [[ "$CALLER_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || { echo 'Invalid repository name.' >&2; exit 1; }
 
       - name: Create GitHub App token
         id: app-token
-        if: (inputs.enforce_deploy_team || inputs.checkout_submodules) && env.DEPLOY_APP_ID != '' && env.DEPLOY_APP_PRIVATE_KEY != ''
+        if: inputs.enforce_deploy_team && env.DEPLOY_APP_ID != '' && env.DEPLOY_APP_PRIVATE_KEY != ''
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ env.DEPLOY_APP_ID }}
           private-key: ${{ env.DEPLOY_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - name: Checkout deployment commit
+      - name: Checkout shared workflow scripts
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
-          token: ${{ inputs.checkout_submodules && steps.app-token.outputs.token || github.token }}
-          submodules: ${{ inputs.checkout_submodules && 'recursive' || 'false' }}
+          repository: ${{ job['workflow_repository'] }}
+          ref: ${{ job['workflow_sha'] }}
+          path: shared
+          persist-credentials: false
 
       - name: Guard deploy actor is allowed member
         id: deploy-guard
@@ -240,94 +273,47 @@ jobs:
           echo "Timed out waiting for SSH on ${GCE_INSTANCE_NAME}."
           exit 1
 
-      - name: Prepare managed application files
-        if: inputs.deploy_mode == 'compose' || inputs.deploy_mode == 'scheduled-container'
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "$CALLER_REPOSITORY" in
-            deg-labs/volatility-monorepo)
-              # shellcheck disable=SC2016
-              sed -i 's/GOARCH=amd64/GOARCH="$(go env GOARCH)"/g' server/api/Dockerfile server/fetcher/Dockerfile
-              printf '%s\n' "$APP_ENV" > .env
-              ;;
-            deg-labs/hdm|deg-labs/stock-theme-ranking-bot|deg-labs/jsf-taisyaku)
-              if ! command -v envsubst >/dev/null; then
-                sudo apt-get update
-                sudo apt-get install -y gettext-base
-              fi
-              export DB_DIRECTORY='./data'
-              # shellcheck disable=SC2016
-              envsubst '$DEPLOY_ENV $DISCORD_WEBHOOK_URL $NOTIFICATION_SUPPRESSION_SECONDS $DB_DIRECTORY' < .env.template > .env
-              if [[ "$CALLER_REPOSITORY" == deg-labs/hdm ]]; then
-                printf '%s' "$ADDRESSES_TXT" > addresses.txt
-              fi
-              ;;
-          esac
+      - name: Download validated artifact
+        if: inputs.deploy_mode == 'compose'
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          path: artifact
 
-      - name: Pack and upload managed artifacts
-        if: inputs.deploy_mode == 'compose' || inputs.deploy_mode == 'scheduled-container'
+      - name: Deploy on GCE
+        env:
+          EXPECTED_DIGEST: ${{ needs.verify.outputs.digest }}
+          RUNTIME_ENV_KEY: ${{ inputs.runtime_env_key }}
+          RUNTIME_FILE_NAME: ${{ inputs.runtime_file_name }}
         shell: bash
         run: |
           set -euo pipefail
-          tar_args=(--exclude=.git --exclude=.github --exclude=.env)
-          case "$CALLER_REPOSITORY" in
-            deg-labs/hdm) tar_args+=(--exclude=data) ;;
-            deg-labs/volatility-monorepo) tar_args+=(--exclude=server/data --exclude=server/logs --exclude=client/ncmma/data --exclude=client/ncmma/logs --exclude=client/ncmma/cache) ;;
-            deg-labs/stock-theme-ranking-bot) tar_args+=(--exclude=data --exclude=logs --exclude=__pycache__ --exclude=.pytest_cache) ;;
-            deg-labs/jsf-taisyaku) tar_args+=(--exclude=__pycache__ --exclude=.claude --exclude=.devcontainer --exclude=.venv --exclude=tmp) ;;
-          esac
-          tar -C "$GITHUB_WORKSPACE" -czf /tmp/app.tar.gz "${tar_args[@]}" .
-          gcloud compute scp /tmp/app.tar.gz .env "${GCE_INSTANCE_NAME}:~" --zone "$GCE_ZONE"
-
-      - name: Deploy managed mode on GCE
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "$CALLER_REPOSITORY" in
-            deg-labs/hdm) app=hdm ;;
-            deg-labs/volatility-monorepo) app=volatility-monorepo ;;
-            deg-labs/stock-theme-ranking-bot) app=stock-theme-ranking-bot ;;
-            deg-labs/jsf-taisyaku) app=jsf-taisyaku ;;
-            deg-labs/gce-package-maintenance) app=package-maintenance ;;
-            *) exit 1 ;;
-          esac
-          script=$(cat <<'REMOTE'
-          set -euo pipefail
-          if [[ "$1" == package-update ]]; then
-            export DEBIAN_FRONTEND=noninteractive
-            sudo apt-get -o APT::Update::Error-Mode=any update
-            sudo apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade
-            sudo systemd-run --unit=gce-package-maintenance-reboot --on-active=60s /usr/bin/systemctl reboot
-            exit 0
+          app="${CALLER_NAME,,}"
+          files=(shared/scripts/deploy_remote.sh)
+          if [[ -n "$RUNTIME_FILE_NAME" ]]; then
+            [[ "$RUNTIME_FILE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]
           fi
-          target="/opt/apps/$2"
-          sudo mkdir -p "$target"
-          sudo chown -R "$(id -u):$(id -g)" "$target"
-          tar -xzf ~/app.tar.gz -C "$target"
-          mv -f ~/.env "$target/.env"
-          cd "$target"
-          sudo docker compose up -d --build --remove-orphans
-          if [[ "$1" == scheduled-container ]]; then
-            # Remove only the two legacy cron entries for this application.
-            if command -v crontab >/dev/null; then
-              cron=$(mktemp)
-              cron_error=$(mktemp)
-              if sudo env LC_ALL=C crontab -l > "$cron" 2> "$cron_error"; then
-                awk '!/\/opt\/apps\/jsf-taisyaku/ && !/jsf-taisyaku\.log/' "$cron" | sudo crontab -
-              elif ! grep -q '^no crontab for ' "$cron_error"; then
-                cat "$cron_error" >&2
-                exit 1
-              fi
-              rm -f "$cron" "$cron_error"
+          if [[ "$DEPLOY_MODE" == compose ]]; then
+            [[ "$(sha256sum artifact/deploy.tar.gz | cut -d ' ' -f 1)" == "$EXPECTED_DIGEST" ]]
+            umask 077
+            if [[ -n "$RUNTIME_ENV_KEY" ]]; then
+              [[ "$RUNTIME_ENV_KEY" =~ ^[A-Z_][A-Z0-9_]*$ && "$RUNTIME_ENV" != *$'\n'* && "$RUNTIME_ENV" != *$'\r'* ]]
+              printf '%s=%s\n' "$RUNTIME_ENV_KEY" "$RUNTIME_ENV" > .env
+            else
+              printf '%s\n' "$RUNTIME_ENV" > .env
+            fi
+            printf 'DEPLOY_ENV=%s\n' "$DEPLOY_ENV" >> .env
+            files+=(artifact/deploy.tar.gz .env)
+            if [[ -n "$RUNTIME_FILE_NAME" ]]; then
+              [[ "$RUNTIME_FILE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]
+              printf '%s' "$RUNTIME_FILE" > gce-runtime-file
+              files+=(gce-runtime-file)
             fi
           fi
-          REMOTE
-          )
-          encoded=$(printf '%s' "$script" | base64 -w 0)
-          gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command "echo '$encoded' | base64 -d | bash -s -- '$DEPLOY_MODE' '$app'"
+          gcloud compute scp "${files[@]}" "${GCE_INSTANCE_NAME}:~" --zone "$GCE_ZONE"
+          gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command "bash ~/deploy_remote.sh '$DEPLOY_MODE' '$app' '$RUNTIME_FILE_NAME'"
 
-      - name: Clean up remote artifact
-        if: always()
+      - name: Clean up remote files
+        if: always() && steps.auth.outcome == 'success'
         shell: bash
-        run: gcloud compute ssh "${GCE_INSTANCE_NAME}" --zone "${GCE_ZONE}" --command 'rm -f ~/app.tar.gz' || true
+        run: gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command 'rm -f ~/deploy_remote.sh ~/deploy.tar.gz ~/gce-runtime-file ~/.env' || true
