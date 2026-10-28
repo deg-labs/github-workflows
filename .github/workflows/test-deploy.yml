@@ -1,0 +1,17 @@
+name: Test GCE deploy modes
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test deployment modes
+        run: python3 -m unittest discover -s tests -v

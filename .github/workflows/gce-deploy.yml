@@ -4,10 +4,9 @@ on:
   workflow_call:
     inputs:
       deploy_mode:
-        description: legacy, compose, scheduled-container または package-update を指定します。
-        required: false
+        description: compose、scheduled-container または package-update を指定します。
+        required: true
         type: string
-        default: legacy
       checkout_submodules:
         description: サブモジュールを再帰的にチェックアウトします。
         required: false
@@ -28,55 +27,25 @@ on:
         required: true
         type: string
       app_env_secret:
-        description: 値を APP_ENV として prepare_command に公開する、呼び出し元の Secret 名（任意）です。
+        description: 値を APP_ENV として 設定ファイルの生成に使用する、呼び出し元の Secret 名（任意）です。
         required: false
         type: string
         default: ''
       discord_webhook_secret:
-        description: 値を DISCORD_WEBHOOK_URL として prepare_command に公開する、呼び出し元の Secret 名（任意）です。
+        description: 値を DISCORD_WEBHOOK_URL として 設定ファイルの生成に使用する、呼び出し元の Secret 名（任意）です。
         required: false
         type: string
         default: ''
       addresses_secret:
-        description: 値を ADDRESSES_TXT として prepare_command に公開する、呼び出し元の Secret 名（任意）です。
+        description: 値を ADDRESSES_TXT として 設定ファイルの生成に使用する、呼び出し元の Secret 名（任意）です。
         required: false
         type: string
         default: ''
       notification_suppression_seconds:
-        description: prepare_command に公開する値（任意）です。
+        description: 設定ファイルの生成に使用する値（任意）です。
         required: false
         type: string
         default: '3600'
-      deploy_server:
-        description: サーバーのデプロイ条件判定用として remote_deploy_command に公開する値です。
-        required: false
-        type: boolean
-        default: true
-      deploy_client:
-        description: クライアントのデプロイ条件判定用として remote_deploy_command に公開する値です。
-        required: false
-        type: boolean
-        default: true
-      prepare_command:
-        description: アーティファクト作成前に実行するシェルコマンド（任意）です。
-        required: false
-        type: string
-        default: ''
-      artifact_excludes:
-        description: アプリケーションアーカイブから除外するパスを改行区切りで指定します。
-        required: false
-        type: string
-        default: ''
-      additional_upload_files:
-        description: /tmp/app.tar.gz に加えてアップロードするファイルを改行区切りで指定します。
-        required: false
-        type: string
-        default: ''
-      remote_deploy_command:
-        description: アーティファクトのアップロード後に GCE インスタンス上で実行するシェルコマンドです。
-        required: false
-        type: string
-        default: ''
 
 jobs:
   deploy:
@@ -145,8 +114,6 @@ jobs:
       DEPLOY_APP_ID: ${{ secrets.ORG_GH_APP_ID }}
       DEPLOY_APP_PRIVATE_KEY: ${{ secrets.ORG_GH_APP_PRIVATE_KEY }}
       NOTIFICATION_SUPPRESSION_SECONDS: ${{ inputs.notification_suppression_seconds }}
-      DEPLOY_SERVER: ${{ inputs.deploy_server }}
-      DEPLOY_CLIENT: ${{ inputs.deploy_client }}
 
     steps:
       - name: Validate deployment environment
@@ -163,24 +130,13 @@ jobs:
 
       - name: Validate deployment mode
         env:
-          PREPARE_COMMAND: ${{ inputs.prepare_command }}
-          REMOTE_COMMAND: ${{ inputs.remote_deploy_command }}
-          EXTRA_UPLOADS: ${{ inputs.additional_upload_files }}
-          EXCLUDES: ${{ inputs.artifact_excludes }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_LABEL: ${{ github.event.label.name }}
         shell: bash
         run: |
           set -euo pipefail
           case "$DEPLOY_MODE:$CALLER_REPOSITORY" in
-            legacy:*)
-              [[ -n "$REMOTE_COMMAND" ]] || { echo 'remote_deploy_command is required for legacy mode.' >&2; exit 1; }
-              ;;
             compose:deg-labs/hdm|compose:deg-labs/volatility-monorepo|compose:deg-labs/stock-theme-ranking-bot|scheduled-container:deg-labs/jsf-taisyaku|package-update:deg-labs/gce-package-maintenance)
-              if [[ -n "$PREPARE_COMMAND$REMOTE_COMMAND$EXTRA_UPLOADS$EXCLUDES" ]]; then
-                echo 'Command, upload and exclude inputs are not allowed in managed modes.' >&2
-                exit 1
-              fi
               if [[ "$EVENT_NAME" == pull_request && "$EVENT_LABEL" != "$DEPLOY_ENV" ]]; then
                 echo 'PR label does not match the deployment environment.' >&2
                 exit 1
@@ -284,11 +240,6 @@ jobs:
           echo "Timed out waiting for SSH on ${GCE_INSTANCE_NAME}."
           exit 1
 
-      - name: Prepare application files
-        if: inputs.deploy_mode == 'legacy' && inputs.prepare_command != '' && (steps.deploy-guard.outputs.allowed == 'true' || inputs.enforce_deploy_team == false)
-        shell: bash
-        run: ${{ inputs.prepare_command }}
-
       - name: Prepare managed application files
         if: inputs.deploy_mode == 'compose' || inputs.deploy_mode == 'scheduled-container'
         shell: bash
@@ -314,24 +265,6 @@ jobs:
               ;;
           esac
 
-      - name: Pack and upload legacy artifacts
-        if: inputs.deploy_mode == 'legacy'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          tar_args=(--exclude=.git --exclude=.github --exclude=.env)
-          while IFS= read -r exclude; do
-            [[ -n "${exclude}" ]] && tar_args+=("--exclude=${exclude}")
-          done <<< "${{ inputs.artifact_excludes }}"
-          tar -C "$GITHUB_WORKSPACE" -czf /tmp/app.tar.gz "${tar_args[@]}" .
-
-          upload_files=(/tmp/app.tar.gz)
-          while IFS= read -r file; do
-            [[ -n "${file}" ]] && upload_files+=("${file}")
-          done <<< "${{ inputs.additional_upload_files }}"
-          gcloud compute scp "${upload_files[@]}" "${GCE_INSTANCE_NAME}:~" --zone "${GCE_ZONE}"
-
       - name: Pack and upload managed artifacts
         if: inputs.deploy_mode == 'compose' || inputs.deploy_mode == 'scheduled-container'
         shell: bash
@@ -348,7 +281,6 @@ jobs:
           gcloud compute scp /tmp/app.tar.gz .env "${GCE_INSTANCE_NAME}:~" --zone "$GCE_ZONE"
 
       - name: Deploy managed mode on GCE
-        if: inputs.deploy_mode != 'legacy'
         shell: bash
         run: |
           set -euo pipefail
@@ -394,19 +326,6 @@ jobs:
           )
           encoded=$(printf '%s' "$script" | base64 -w 0)
           gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command "echo '$encoded' | base64 -d | bash -s -- '$DEPLOY_MODE' '$app'"
-
-      - name: Deploy legacy command on GCE
-        if: inputs.deploy_mode == 'legacy' && (steps.deploy-guard.outputs.allowed == 'true' || inputs.enforce_deploy_team == false)
-        shell: bash
-        env:
-          REMOTE_DEPLOY_COMMAND: ${{ inputs.remote_deploy_command }}
-        run: |
-          set -euo pipefail
-          printf -v remote_command "DEPLOY_SERVER='%s'\nDEPLOY_CLIENT='%s'\n%s\n" \
-            "${{ inputs.deploy_server }}" \
-            "${{ inputs.deploy_client }}" \
-            "$REMOTE_DEPLOY_COMMAND"
-          gcloud compute ssh "${GCE_INSTANCE_NAME}" --zone "${GCE_ZONE}" --command "$remote_command"
 
       - name: Clean up remote artifact
         if: always()
