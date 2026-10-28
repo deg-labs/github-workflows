@@ -284,36 +284,51 @@ jobs:
         env:
           EXPECTED_DIGEST: ${{ needs.verify.outputs.digest }}
           RUNTIME_ENV_KEY: ${{ inputs.runtime_env_key }}
+          RUNTIME_ENV_SECRET_NAME: ${{ inputs.runtime_env_secret }}
           RUNTIME_FILE_NAME: ${{ inputs.runtime_file_name }}
+          RUNTIME_FILE_SECRET_NAME: ${{ inputs.runtime_file_secret }}
         shell: bash
         run: |
           set -euo pipefail
           app="${CALLER_NAME,,}"
-          files=(shared/scripts/deploy_remote.sh)
-          if [[ -n "$RUNTIME_FILE_NAME" ]]; then
-            [[ "$RUNTIME_FILE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          prefix="gce-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          work="$RUNNER_TEMP/$prefix"
+          mkdir -m 700 "$work"
+          cp shared/scripts/deploy_remote.sh "$work/$prefix-script.sh"
+          files=("$work/$prefix-script.sh")
+          if [[ -n "$RUNTIME_FILE_NAME$RUNTIME_FILE_SECRET_NAME" ]]; then
+            [[ "$DEPLOY_MODE" == compose && -n "$RUNTIME_FILE_SECRET_NAME" && -n "$RUNTIME_FILE" && "$RUNTIME_FILE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]
           fi
           if [[ "$DEPLOY_MODE" == compose ]]; then
             [[ "$(sha256sum artifact/deploy.tar.gz | cut -d ' ' -f 1)" == "$EXPECTED_DIGEST" ]]
+            if [[ -n "$RUNTIME_ENV_SECRET_NAME" && -z "$RUNTIME_ENV" ]]; then
+              echo 'Runtime environment secret is empty or unavailable.' >&2
+              exit 1
+            fi
             umask 077
             if [[ -n "$RUNTIME_ENV_KEY" ]]; then
               [[ "$RUNTIME_ENV_KEY" =~ ^[A-Z_][A-Z0-9_]*$ && "$RUNTIME_ENV" != *$'\n'* && "$RUNTIME_ENV" != *$'\r'* ]]
-              printf '%s=%s\n' "$RUNTIME_ENV_KEY" "$RUNTIME_ENV" > .env
+              printf '%s=%s\n' "$RUNTIME_ENV_KEY" "$RUNTIME_ENV" > "$work/$prefix-env"
             else
-              printf '%s\n' "$RUNTIME_ENV" > .env
+              printf '%s\n' "$RUNTIME_ENV" > "$work/$prefix-env"
             fi
-            printf 'DEPLOY_ENV=%s\n' "$DEPLOY_ENV" >> .env
-            files+=(artifact/deploy.tar.gz .env)
+            printf 'DEPLOY_ENV=%s\n' "$DEPLOY_ENV" >> "$work/$prefix-env"
+            cp artifact/deploy.tar.gz "$work/$prefix-archive.tgz"
+            files+=("$work/$prefix-archive.tgz" "$work/$prefix-env")
             if [[ -n "$RUNTIME_FILE_NAME" ]]; then
-              [[ "$RUNTIME_FILE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]
-              printf '%s' "$RUNTIME_FILE" > gce-runtime-file
-              files+=(gce-runtime-file)
+              printf '%s' "$RUNTIME_FILE" > "$work/$prefix-file"
+              files+=("$work/$prefix-file")
             fi
           fi
           gcloud compute scp "${files[@]}" "${GCE_INSTANCE_NAME}:~" --zone "$GCE_ZONE"
-          gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command "bash ~/deploy_remote.sh '$DEPLOY_MODE' '$app' '$RUNTIME_FILE_NAME'"
+          gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command "bash ~/$prefix-script.sh '$DEPLOY_MODE' '$app' '$RUNTIME_FILE_NAME' '$prefix'"
 
       - name: Clean up remote files
         if: always() && steps.auth.outcome == 'success'
         shell: bash
-        run: gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command 'rm -f ~/deploy_remote.sh ~/deploy.tar.gz ~/gce-runtime-file ~/.env' || true
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          prefix="gce-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command "rm -f ~/$prefix-script.sh ~/$prefix-archive.tgz ~/$prefix-env ~/$prefix-file" || true
