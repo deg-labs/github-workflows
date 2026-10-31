@@ -27,7 +27,7 @@ class ReleaseTest(unittest.TestCase):
         return temp.name
 
     def test_rejects_traversal_symlink_and_env(self):
-        for name, kind in [('../escape', tarfile.REGTYPE), ('link', tarfile.SYMTYPE), ('.env', tarfile.REGTYPE)]:
+        for name, kind in [('../escape', tarfile.REGTYPE), ('link', tarfile.SYMTYPE), ('.env', tarfile.REGTYPE), ('.envrc', tarfile.REGTYPE), ('settings.env', tarfile.REGTYPE), ('settings.env.local', tarfile.REGTYPE), ('.ENVrc', tarfile.REGTYPE)]:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as dest:
                 with self.assertRaises(ValueError):
                     validator.validate_archive(self.archive(name, kind), dest)
