@@ -35,7 +35,7 @@ def validate_archive(archive, directory):
             if normalized in seen:
                 fail(f"Duplicate archive member: {member.name}")
             seen.add(normalized)
-            if any(part == ".git" or part.lower().startswith(".env") or part.lower().endswith(".env") or ".env." in part.lower() for part in path.parts):
+            if any(part == ".git" or ".env" in part.lower() for part in path.parts):
                 fail(f"Forbidden archive member: {member.name}")
             total += member.size
             if total > 512 * 1024 * 1024:
