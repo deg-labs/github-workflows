@@ -3,11 +3,35 @@ name: Deploy application to GCE
 on:
   workflow_call:
     inputs:
-      checkout_submodules:
-        description: サブモジュールを再帰的にチェックアウトします。
+      deploy_mode:
+        description: compose または package-update を指定します。
+        required: true
+        type: string
+      artifact_id:
+        description: 同じ実行で作成された Compose 用成果物の ID です。
+        type: string
         required: false
-        type: boolean
-        default: false
+        default: ''
+      runtime_env_secret:
+        description: 実行時の dotenv または単一値を含む Secret 名です。
+        type: string
+        required: false
+        default: ''
+      runtime_env_key:
+        description: 単一値を dotenv に変換する環境変数名です。省略時は Secret 全体を dotenv として扱います。
+        type: string
+        required: false
+        default: ''
+      runtime_file_secret:
+        description: 実行時ファイルの内容を含む Secret 名です。
+        type: string
+        required: false
+        default: ''
+      runtime_file_name:
+        description: 実行時ファイルの名前です。英数字、ピリオド、アンダースコア、ハイフンのみです。
+        type: string
+        required: false
+        default: ''
       enforce_deploy_team:
         description: 実行者のチーム所属を必須にします。PR 作成者は同じチームのメンバーまたは dependabot[bot] を許可します。
         required: false
@@ -22,65 +46,51 @@ on:
         description: 実際のデプロイジョブで使用するデプロイ環境です。
         required: true
         type: string
-      app_env_secret:
-        description: 値を APP_ENV として prepare_command に公開する、呼び出し元の Secret 名（任意）です。
-        required: false
-        type: string
-        default: ''
-      discord_webhook_secret:
-        description: 値を DISCORD_WEBHOOK_URL として prepare_command に公開する、呼び出し元の Secret 名（任意）です。
-        required: false
-        type: string
-        default: ''
-      addresses_secret:
-        description: 値を ADDRESSES_TXT として prepare_command に公開する、呼び出し元の Secret 名（任意）です。
-        required: false
-        type: string
-        default: ''
-      notification_suppression_seconds:
-        description: prepare_command に公開する値（任意）です。
-        required: false
-        type: string
-        default: '3600'
-      deploy_server:
-        description: サーバーのデプロイ条件判定用として remote_deploy_command に公開する値です。
-        required: false
-        type: boolean
-        default: true
-      deploy_client:
-        description: クライアントのデプロイ条件判定用として remote_deploy_command に公開する値です。
-        required: false
-        type: boolean
-        default: true
-      prepare_command:
-        description: アーティファクト作成前に実行するシェルコマンド（任意）です。
-        required: false
-        type: string
-        default: ''
-      artifact_excludes:
-        description: アプリケーションアーカイブから除外するパスを改行区切りで指定します。
-        required: false
-        type: string
-        default: ''
-      additional_upload_files:
-        description: /tmp/app.tar.gz に加えてアップロードするファイルを改行区切りで指定します。
-        required: false
-        type: string
-        default: ''
-      remote_deploy_command:
-        description: アーティファクトのアップロード後に GCE インスタンス上で実行するシェルコマンドです。
-        required: true
-        type: string
 
 jobs:
+  verify:
+    if: inputs.deploy_mode == 'compose'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.hash.outputs.digest }}
+      compose_file: ${{ steps.hash.outputs.compose_file }}
+    steps:
+      - name: Check artifact ID
+        env:
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ job['workflow_repository'] }}
+          ref: ${{ job['workflow_sha'] }}
+          path: shared
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          path: artifact
+          merge-multiple: true
+      - name: Validate artifact and Compose policy
+        id: hash
+        run: |
+          set -euo pipefail
+          python3 shared/scripts/validate_release.py artifact/deploy.tar.gz "$GITHUB_SHA"
+          echo "digest=$(sha256sum artifact/deploy.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
   deploy:
-    # Caller workflows decide which labels are accepted for each repository.
+    needs: verify
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
-       (github.event.label.name == 'dev' || github.event.label.name == 'stg' ||
-        github.event.label.name == 'prd'))
+      always() &&
+      (inputs.deploy_mode == 'package-update' || needs.verify.result == 'success') &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+        (github.event.label.name == 'dev' || github.event.label.name == 'stg' ||
+         github.event.label.name == 'prd')))
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.environment_name }}
@@ -89,6 +99,9 @@ jobs:
       id-token: write
     env:
       DEPLOY_ENV: ${{ inputs.environment_name }}
+      DEPLOY_MODE: ${{ inputs.deploy_mode }}
+      CALLER_REPOSITORY: ${{ github.repository }}
+      CALLER_NAME: ${{ github.event.repository.name }}
       # Environment-specific values use the DEV_*, STG_*, and PRD_* secret
       # prefixes. PROD_* remains a compatibility fallback for existing callers.
       GCE_INSTANCE_NAME: >-
@@ -131,14 +144,10 @@ jobs:
           )] ||
           (inputs.environment_name == 'prd' && secrets.PROD_GCP_WIF_PROVIDER || '')
         }}
-      APP_ENV: ${{ inputs.app_env_secret != '' && secrets[inputs.app_env_secret] || '' }}
-      DISCORD_WEBHOOK_URL: ${{ inputs.discord_webhook_secret != '' && secrets[inputs.discord_webhook_secret] || '' }}
-      ADDRESSES_TXT: ${{ inputs.addresses_secret != '' && secrets[inputs.addresses_secret] || '' }}
+      RUNTIME_ENV: ${{ inputs.runtime_env_secret != '' && secrets[inputs.runtime_env_secret] || '' }}
+      RUNTIME_FILE: ${{ inputs.runtime_file_secret != '' && secrets[inputs.runtime_file_secret] || '' }}
       DEPLOY_APP_ID: ${{ secrets.ORG_GH_APP_ID }}
       DEPLOY_APP_PRIVATE_KEY: ${{ secrets.ORG_GH_APP_PRIVATE_KEY }}
-      NOTIFICATION_SUPPRESSION_SECONDS: ${{ inputs.notification_suppression_seconds }}
-      DEPLOY_SERVER: ${{ inputs.deploy_server }}
-      DEPLOY_CLIENT: ${{ inputs.deploy_client }}
 
     steps:
       - name: Validate deployment environment
@@ -153,21 +162,39 @@ jobs:
               ;;
           esac
 
+      - name: Validate deployment mode
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_LABEL: ${{ github.event.label.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_MODE" in
+            compose|package-update) ;;
+            *) echo 'Unsupported deployment mode.' >&2; exit 1 ;;
+          esac
+          if [[ "$EVENT_NAME" == pull_request && "$EVENT_LABEL" != "$DEPLOY_ENV" ]]; then
+            echo 'PR label does not match the deployment environment.' >&2
+            exit 1
+          fi
+          [[ "$CALLER_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || { echo 'Invalid repository name.' >&2; exit 1; }
+
       - name: Create GitHub App token
         id: app-token
-        if: (inputs.enforce_deploy_team || inputs.checkout_submodules) && env.DEPLOY_APP_ID != '' && env.DEPLOY_APP_PRIVATE_KEY != ''
+        if: inputs.enforce_deploy_team && env.DEPLOY_APP_ID != '' && env.DEPLOY_APP_PRIVATE_KEY != ''
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ env.DEPLOY_APP_ID }}
           private-key: ${{ env.DEPLOY_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - name: Checkout deployment commit
+      - name: Checkout shared workflow scripts
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
-          token: ${{ inputs.checkout_submodules && steps.app-token.outputs.token || github.token }}
-          submodules: ${{ inputs.checkout_submodules && 'recursive' || 'false' }}
+          repository: ${{ job['workflow_repository'] }}
+          ref: ${{ job['workflow_sha'] }}
+          path: shared
+          persist-credentials: false
 
       - name: Guard deploy actor is allowed member
         id: deploy-guard
@@ -248,42 +275,65 @@ jobs:
           echo "Timed out waiting for SSH on ${GCE_INSTANCE_NAME}."
           exit 1
 
-      - name: Prepare application files
-        if: inputs.prepare_command != '' && (steps.deploy-guard.outputs.allowed == 'true' || inputs.enforce_deploy_team == false)
-        shell: bash
-        run: ${{ inputs.prepare_command }}
-
-      - name: Pack and upload artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          tar_args=(--exclude=.git --exclude=.github --exclude=.env)
-          while IFS= read -r exclude; do
-            [[ -n "${exclude}" ]] && tar_args+=("--exclude=${exclude}")
-          done <<< "${{ inputs.artifact_excludes }}"
-          tar -C "$GITHUB_WORKSPACE" -czf /tmp/app.tar.gz "${tar_args[@]}" .
-
-          upload_files=(/tmp/app.tar.gz)
-          while IFS= read -r file; do
-            [[ -n "${file}" ]] && upload_files+=("${file}")
-          done <<< "${{ inputs.additional_upload_files }}"
-          gcloud compute scp "${upload_files[@]}" "${GCE_INSTANCE_NAME}:~" --zone "${GCE_ZONE}"
+      - name: Download validated artifact
+        if: inputs.deploy_mode == 'compose'
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          path: artifact
+          merge-multiple: true
 
       - name: Deploy on GCE
-        if: steps.deploy-guard.outputs.allowed == 'true' || inputs.enforce_deploy_team == false
-        shell: bash
         env:
-          REMOTE_DEPLOY_COMMAND: ${{ inputs.remote_deploy_command }}
+          EXPECTED_DIGEST: ${{ needs.verify.outputs.digest }}
+          COMPOSE_FILE: ${{ needs.verify.outputs.compose_file }}
+          RUNTIME_ENV_KEY: ${{ inputs.runtime_env_key }}
+          RUNTIME_ENV_SECRET_NAME: ${{ inputs.runtime_env_secret }}
+          RUNTIME_FILE_NAME: ${{ inputs.runtime_file_name }}
+          RUNTIME_FILE_SECRET_NAME: ${{ inputs.runtime_file_secret }}
+        shell: bash
         run: |
           set -euo pipefail
-          printf -v remote_command "DEPLOY_SERVER='%s'\nDEPLOY_CLIENT='%s'\n%s\n" \
-            "${{ inputs.deploy_server }}" \
-            "${{ inputs.deploy_client }}" \
-            "$REMOTE_DEPLOY_COMMAND"
-          gcloud compute ssh "${GCE_INSTANCE_NAME}" --zone "${GCE_ZONE}" --command "$remote_command"
+          app="${CALLER_NAME,,}"
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          prefix="gce-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          work="$RUNNER_TEMP/$prefix"
+          mkdir -m 700 "$work"
+          cp shared/scripts/deploy_remote.sh "$work/$prefix-script.sh"
+          files=("$work/$prefix-script.sh")
+          if [[ -n "$RUNTIME_FILE_NAME$RUNTIME_FILE_SECRET_NAME" ]]; then
+            [[ "$DEPLOY_MODE" == compose && -n "$RUNTIME_FILE_SECRET_NAME" && -n "$RUNTIME_FILE" && "$RUNTIME_FILE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]
+          fi
+          if [[ "$DEPLOY_MODE" == compose ]]; then
+            case "$COMPOSE_FILE" in compose.yaml|compose.yml|docker-compose.yaml|docker-compose.yml) ;; *) exit 1 ;; esac
+            [[ "$(sha256sum artifact/deploy.tar.gz | cut -d ' ' -f 1)" == "$EXPECTED_DIGEST" ]]
+            if [[ -n "$RUNTIME_ENV_SECRET_NAME" && -z "$RUNTIME_ENV" ]]; then
+              echo 'Runtime environment secret is empty or unavailable.' >&2
+              exit 1
+            fi
+            umask 077
+            if [[ -n "$RUNTIME_ENV_KEY" ]]; then
+              [[ "$RUNTIME_ENV_KEY" =~ ^[A-Z_][A-Z0-9_]*$ && "$RUNTIME_ENV" != *$'\n'* && "$RUNTIME_ENV" != *$'\r'* ]]
+              printf '%s=%s\n' "$RUNTIME_ENV_KEY" "$RUNTIME_ENV" > "$work/$prefix-env"
+            else
+              printf '%s\n' "$RUNTIME_ENV" > "$work/$prefix-env"
+            fi
+            printf 'DEPLOY_ENV=%s\n' "$DEPLOY_ENV" >> "$work/$prefix-env"
+            cp artifact/deploy.tar.gz "$work/$prefix-archive.tgz"
+            files+=("$work/$prefix-archive.tgz" "$work/$prefix-env")
+            if [[ -n "$RUNTIME_FILE_NAME" ]]; then
+              printf '%s' "$RUNTIME_FILE" > "$work/$prefix-file"
+              files+=("$work/$prefix-file")
+            fi
+          fi
+          gcloud compute scp "${files[@]}" "${GCE_INSTANCE_NAME}:~" --zone "$GCE_ZONE"
+          gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command "bash ~/$prefix-script.sh '$DEPLOY_MODE' '$app' '$RUNTIME_FILE_NAME' '$prefix' '$COMPOSE_FILE'"
 
-      - name: Clean up remote artifact
-        if: always()
+      - name: Clean up remote files
+        if: always() && steps.auth.outcome == 'success'
         shell: bash
-        run: gcloud compute ssh "${GCE_INSTANCE_NAME}" --zone "${GCE_ZONE}" --command 'rm -f ~/app.tar.gz' || true
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          prefix="gce-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gcloud compute ssh "$GCE_INSTANCE_NAME" --zone "$GCE_ZONE" --command "rm -f ~/$prefix-script.sh ~/$prefix-archive.tgz ~/$prefix-env ~/$prefix-file" || true
