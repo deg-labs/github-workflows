@@ -73,6 +73,7 @@ jobs:
         with:
           artifact-ids: ${{ inputs.artifact_id }}
           path: artifact
+          merge-multiple: true
       - name: Validate artifact and Compose policy
         id: hash
         run: |
@@ -280,6 +281,7 @@ jobs:
         with:
           artifact-ids: ${{ inputs.artifact_id }}
           path: artifact
+          merge-multiple: true
 
       - name: Deploy on GCE
         env:

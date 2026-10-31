@@ -32,6 +32,10 @@ class DeployModesTest(unittest.TestCase):
     def test_rejects_mismatched_label(self):
         self.assertNotEqual(self.validate('compose', label='prd').returncode, 0)
 
+    def test_artifact_id_downloads_use_flat_layout(self):
+        expected = "artifact-ids: ${{ inputs.artifact_id }}\n          path: artifact\n          merge-multiple: true"
+        self.assertEqual(self.workflow.count(expected), 2)
+
     def test_no_arbitrary_commands(self):
         for name in ('prepare_command', 'remote_deploy_command', 'additional_upload_files'):
             self.assertNotIn(f'      {name}:', self.workflow)
